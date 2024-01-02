@@ -133,7 +133,7 @@ services:
       - /etc/machine-id:/etc/machine-id:ro
       - ./promtail:/etc/promtail
       - promtail-data:/tmp
-      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - ${DOCKER_CONTAINERS_PATH:-/var/lib/docker/containers}:/var/lib/docker/containers:ro
     entrypoint: ./etc/promtail/entrypoint.sh
     command: ["/usr/bin/promtail"]
     environment:
