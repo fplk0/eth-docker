@@ -42,7 +42,7 @@ services:
       - AWS_PROFILE=${AWS_PROFILE}
       - AWS_HOSTED_ZONE_ID=${AWS_HOSTED_ZONE_ID}
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ${DOCKER_HOST_PATH:-/var/run/docker.sock}:/var/run/docker.sock:ro
       - certs:/letsencrypt
       - ~/.aws:/root/.aws:ro
       - /etc/localtime:/etc/localtime:ro

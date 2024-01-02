@@ -25,7 +25,7 @@ services:
     volumes:
       - prom-data:/prometheus
       - /etc/localtime:/etc/localtime:ro
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ${DOCKER_HOST_PATH:-/var/run/docker.sock}:/var/run/docker.sock:ro
       - ./prometheus/custom-prom.yml:/etc/prometheus/custom-prom.yml:ro
       - ./prometheus/conf.d/:/etc/prometheus/conf.d/:ro
     command:
@@ -111,7 +111,7 @@ services:
     restart: "unless-stopped"
     image: gcr.io/cadvisor/cadvisor:v0.47.2
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ${DOCKER_HOST_PATH:-/var/run/docker.sock}:/var/run/docker.sock:ro
       - /:/rootfs:ro
       - /var/run:/var/run
       - /sys:/sys:ro
