@@ -76,6 +76,8 @@ else
   fi
   if [ "${__memtotal}" -gt 30 ]; then
     __prune="${__prune} --Pruning.FullPruningMemoryBudgetMb=16384"
+  elif [ "${__memtotal}" -gt 24 ]; then
+    __prune="${__prune} --Pruning.FullPruningMemoryBudgetMb=12288"
   fi
   echo "Using pruning parameters:"
   echo "${__prune}"
