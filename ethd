@@ -106,7 +106,7 @@ upgrade_compose() {
   if [[ "$__distro" = "ubuntu" ]]; then
     if [ "${__os_major_version}" -lt 20 ]; then
       echo "${__project_name} cannot update Docker Compose on Ubuntu ${__os_major_version}."
-      echo "Consider upgrading to 20.04 and then 22.04."
+      echo "Consider upgrading to 20.04, then 22.04 and then 24.04."
       exit 1
     fi
     ${__auto_sudo} apt-get update
@@ -124,9 +124,9 @@ upgrade_compose() {
     echo "Removed docker-compose"
   elif [[ "$__distro" =~ "debian" ]]; then
     ${__auto_sudo} apt-get update && ${__auto_sudo} apt-get -y install ca-certificates curl gnupg
-    if [ "${__os_major_version}" -lt 10 ]; then
+    if [ "${__os_major_version}" -lt 11 ]; then
         echo "${__project_name} cannot update Docker Compose on Debian ${__os_major_version}."
-        echo "Consider upgrading to 10, then 11 and then 12."
+        echo "Consider upgrading to 11 and then 12."
         exit 1
     fi
     ${__auto_sudo} mkdir -p /etc/apt/keyrings
@@ -243,7 +243,7 @@ continue? (no/yes) " yn
   if [[ "$__distro" = "ubuntu" ]]; then
     if [ "${__os_major_version}" -lt 20 ]; then
       echo "${__project_name} cannot install Docker on Ubuntu ${__os_major_version}."
-      echo "Consider upgrading to 20.04 and then 22.04."
+      echo "Consider upgrading to 20.04, then 22.04 and then 24.04."
       exit 1
     fi
     if [ -z "$(command -v docker)" ]; then
@@ -275,9 +275,9 @@ continue? (no/yes) " yn
     if [ -z "$(command -v docker)" ]; then
       ${__auto_sudo} apt-get update
       ${__auto_sudo} apt-get -y install ca-certificates curl gnupg whiptail chrony pkg-config
-      if [ "${__os_major_version}" -lt 10 ]; then
+      if [ "${__os_major_version}" -lt 11 ]; then
         echo "${__project_name} cannot install Docker on Debian ${__os_major_version}."
-        echo "Consider upgrading to 10, then 11 and then 12."
+        echo "Consider upgrading to 11 and then 12."
         exit 1
       fi
         ${__auto_sudo} mkdir -p /etc/apt/keyrings
@@ -712,6 +712,59 @@ ssv_switch() {
 }
 
 
+delete_reth() {
+# Enable this when Reth changes DB
+  if true; then
+    return 0
+  fi
+# Check for Reth
+  var="COMPOSE_FILE"
+  value=$(sed -n -e "s/^${var}=\(.*\)/\1/p" "${ENV_FILE}" || true)
+# I do mean to match literally
+# shellcheck disable=SC2076
+  if [[ ! "${value}" =~ "reth.yml" ]]; then
+    return 0
+  fi
+
+# Check Reth version, only continue if on that version
+  var="RETH_DOCKER_TAG"
+  value=$(sed -n -e "s/^${var}=\(.*\)/\1/p" "${ENV_FILE}" || true)
+# I do mean to match literally
+# shellcheck disable=SC2076
+  if [[ ! ("${value}" =~ "beta" || "${value}" = "latest") ]]; then
+    return 0
+  fi
+
+  if [ -z "$(dodocker volume ls -q -f "name=reth-el-data")" ]; then # No Reth volume
+    return 0
+  fi
+
+# Check Reth db version
+  __db_version="$(dodocker run --rm -v "$(dodocker volume ls -q -f "name=reth-el-data")":"/var/lib/reth" \
+      alpine:3 cat /var/lib/reth/db/database.version)"
+  if [ "${__db_version}" -ne "1" ]; then
+    return 0
+  fi
+
+  echo "Detected Reth. For Reth beta, it will need to be re-synced from scratch."
+  echo
+  while true; do
+    read -rp "WARNING - About to delete the Reth database. Do you wish to continue? (Y/n) " yn
+    case $yn in
+      [Nn]o | [Nn]  ) echo "Aborting, no changes made"; exit 130;;
+      * ) break;;
+    esac
+  done
+
+  echo "Stopping Reth container"
+  docompose stop execution && docompose rm -f execution
+  dodocker volume rm "$(dodocker volume ls -q -f "name=reth-el-data")"
+  echo
+  echo "Reth stopped and database deleted."
+  echo
+}
+
+
 delete_erigon() {
 # Check for Erigon
   var="COMPOSE_FILE"
@@ -878,6 +931,46 @@ upgrade_postgres() {
 }
 
 
+__lookup_cf_zone() { # Migrates traefik-cf setup to use Zone ID
+  __compose_ymls=$(sed -n -e "s/^COMPOSE_FILE=\(.*\)/\1/p" "${ENV_FILE}.source" || true)
+  __dns_token=$(sed -n -e "s/^CF_DNS_API_TOKEN=\(.*\)/\1/p" "${ENV_FILE}.source" || true)
+  __zone_token=$(sed -n -e "s/^CF_ZONE_API_TOKEN=\(.*\)/\1/p" "${ENV_FILE}.source" || true)
+  __domain=$(sed -n -e "s/^DOMAIN=\(.*\)/\1/p" "${ENV_FILE}.source" || true)
+  if [[ ! $__compose_ymls =~ traefik-cf.yml ]]; then
+    value=""
+    return
+  elif [[ -n $__dns_token ]]; then
+    if [[ -n $__zone_token ]]; then
+      __token=$__zone_token
+    else
+      __token=$__dns_token
+    fi
+    set +e
+    value=$(docompose run --rm curl-jq sh -c \
+      "curl -s \"https://api.cloudflare.com/client/v4/zones?name=${__domain}\" -H \"Authorization: Bearer ${__token}\" \
+      -H \"Content-Type: application/json\" | jq -r '.result[0].id'" | tail -n 1)
+    __code=$?
+    if [[ "$__code" -ne 0 ]]; then
+      value=""
+      return
+    fi
+    __success=$(docompose run --rm curl-jq sh -c \
+      "curl -s \"https://api.cloudflare.com/client/v4/zones?name=${__domain}\" -H \"Authorization: Bearer ${__token}\" \
+      -H \"Content-Type: application/json\" | jq -r '.success'" | tail -n 1)
+    set -e
+    if [ "${__success}" = "true" ]; then
+      return
+    else
+      value=""
+      return
+    fi
+  else
+    value=""
+    return
+  fi
+}
+
+
 # envmigrate used to be called w/ arguments and checks for that
 # shellcheck disable=SC2120
 envmigrate() {
@@ -999,6 +1092,13 @@ NEW_VARS=( CL_P2P_PORT KEY_API_PORT EL_NODE FEE_RECIPIENT EL_EXTRAS CF_DNS_API_T
       fi
       # Handle & in GRAFFITI gracefully
       sed -i'.original' -e "s~^\(${var}\s*=\s*\).*\$~\1${value//&/\\&}~" "${ENV_FILE}"
+    else # empty value
+      if [ "${var}" = "CF_ZONE_ID" ]; then
+        __lookup_cf_zone
+        if [ -n "${value}" ]; then
+          sed -i'.original' -e "s~^\(${var}\s*=\s*\).*\$~\1${value//&/\\&}~" "${ENV_FILE}"
+        fi
+      fi
     fi
   done
   if [ "${__keep_targets}" -eq 1 ]; then
@@ -1006,6 +1106,9 @@ NEW_VARS=( CL_P2P_PORT KEY_API_PORT EL_NODE FEE_RECIPIENT EL_EXTRAS CF_DNS_API_T
     for var in "${TARGET_VARS[@]}"; do
       value=$(sed -n -e "s/^${var}=\(.*\)/\1/p" "${ENV_FILE}.source" || true)
       if [ -n "${value}" ]; then
+        if [[ "${var}" = "DDNS_TAG" && "${__source_ver}" -lt "8" ]]; then # Switch to ddns-updater
+          value="v2"
+        fi
         sed -i'.original' -e "s~^\(${var}\s*=\s*\).*$~\1${value}~" "${ENV_FILE}"
       fi
     done
@@ -1112,15 +1215,15 @@ nag_os_version() {
   if [[ "$__distro" = "ubuntu" ]]; then
     if [ "${__os_major_version}" -lt 20 ]; then
      echo
-     echo "Ubuntu ${__os_major_version} is older than the recommended 22.04 or 20.04 version."
+     echo "Ubuntu ${__os_major_version} is older than the recommended 24.04, 22.04 or 20.04 version."
      echo
     fi
   fi
 
   if [[ "$__distro" =~ "debian" ]]; then
-    if [ "${__os_major_version}" -lt 10 ]; then
+    if [ "${__os_major_version}" -lt 11 ]; then
      echo
-     echo "Debian ${__os_major_version} is older than the recommended 10, 11 or 12 version."
+     echo "Debian ${__os_major_version} is older than the recommended 12 or 11 version."
      echo
     fi
   fi
@@ -1197,7 +1300,11 @@ update() {
     value=$(sed -n -e "s/^${var}=\(.*\)/\1/p" "${ENV_FILE}" || true)
     if [ -z "${value}" ] || [ "${value}" = "latest" ]; then
       export ETHDPINNED=""
-      ${__as_owner} git pull
+      __branch=$(git rev-parse --abbrev-ref HEAD)
+      if [[ "${__branch}" =~ ^tag-v[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        git checkout main
+      fi
+      ${__as_owner} git pull origin main
     else
       export ETHDPINNED="${value}"
       ${__as_owner} git fetch --tags
@@ -1243,7 +1350,7 @@ update() {
         ;;
       *)
         echo "Error: Unknown option: $1" >&2
-        exit 1
+        shift
         ;;
     esac
   done
@@ -1265,6 +1372,7 @@ update() {
   pull_and_build
 
   delete_erigon
+  delete_reth
   upgrade_postgres
 
   echo
@@ -1389,6 +1497,7 @@ resync-execution() {
     * ) echo "Aborting."; exit 130;;
   esac
 
+  __el_volume="$(basename "$(realpath .)")_${__el_volume}"
   echo "Stopping ${__el_client} container"
   docompose stop execution && docompose rm -f execution
   dodocker volume rm "$(dodocker volume ls -q -f "name=${__el_volume}")"
@@ -1438,6 +1547,7 @@ resync-consensus() {
     * ) echo "Aborting."; exit 130;;
   esac
 
+  __cl_volume="$(basename "$(realpath .)")_${__cl_volume}"
   echo "Stopping ${__cl_client} container"
   docompose stop consensus && docompose rm -f consensus
   if [ "${__cl_volume}" = "wipe-db" ]; then
@@ -1604,7 +1714,9 @@ database\". During the \"Compacting database\" stage it may not output logs for 
 prune-besu() {
 # Needs to be in a release first
   echo "Trie log pruning is not yet in a released Besu version. Aborting."
-  return 0
+  if true; then
+    return 0
+  fi
   __non_interactive=0
   while :
   do
@@ -1829,13 +1941,14 @@ execution | grep Full\" to see whether it is."
   if [ $exitstatus -ne 0 ]; then
     echo "Unable to start prune, error code ${exitstatus}. This is likely a bug."
     echo "An attempt to run it returned this: ${prune_result}"
+    # shellcheck disable=SC2028
     echo 'The command attempted was: docker compose run --rm set-prune-marker "curl -s \
 --data {\\\"method\\\":\\\"admin_prune\\\",\\\"params\\\":[],\\\"id\\\":1,\\\"jsonrpc\\\":\\\"2.0\\\"} \
 -H Content-Type:\ application/json http://execution:8545"'
     exit ${exitstatus}
   fi
   echo "Nethermind returns ${prune_result}"
-  if [[ ! "${prune_result}" =~ "Starting" ]]; then
+  if [[ ! "${prune_result}" =~ [Ss]tarting ]]; then
     echo "Unable to start prune. This is likely a bug."
     exit 70
   fi
@@ -1845,6 +1958,102 @@ execution | grep Full\" to see whether it is."
   echo "Please do not restart the node or restart Nethermind until prune is done."
   echo
   echo "When prune is done, Nethermind will automatically re-start."
+  echo
+}
+
+
+prune-lighthouse() {
+  __non_interactive=0
+  while :
+  do
+    if [ -z "${1+x}" ]; then
+      break
+    fi
+    case "$1" in
+      --non-interactive)
+        __non_interactive=1
+        shift
+        ;;
+      *)
+        echo "Error: Unknown option: $1" >&2
+        exit 1
+        ;;
+    esac
+  done
+  if [ "${ETHD_FRONTEND:-}" = "noninteractive" ]; then
+    __non_interactive=1
+  fi
+
+  if [ ! -f "${ENV_FILE}" ]; then
+    echo "${ENV_FILE} configuration file not found, aborting."
+    exit 1
+  fi
+
+  var="COMPOSE_FILE"
+  value=$(sed -n -e "s/^${var}=\(.*\)/\1/p" "${ENV_FILE}" || true)
+# Literal match intended
+# shellcheck disable=SC2076
+  if [[ ! "${value}" =~ "lighthouse.yml" && ! "${value}" =~ "lighthouse-cl-only.yml" ]]; then
+    echo "You do not appear to be using Lighthouse, aborting."
+    exit 1
+  fi
+
+  # Check for archive node
+  var="ARCHIVE_NODE"
+  value=$(sed -n -e "s/^${var}=\(.*\)/\1/p" "${ENV_FILE}" || true)
+  if [[ "${value}" = "true" ]]; then
+    echo "Lighthouse is an archive node: Aborting."
+    exit 1
+  fi
+
+  rpc_line=$(grep '^CL_REST_PORT=' "${ENV_FILE}")
+  regex='^CL_REST_PORT=([0-9]+)'
+  if [[ ! "${rpc_line}" =~ ${regex} ]]; then
+    echo "Unable to determine CL_REST_PORT, aborting."
+    exit 1
+  else
+    rpc_port="${BASH_REMATCH[1]}"
+  fi
+
+  set +e
+  sync_status=$(docompose exec -T consensus wget -qO- "http://localhost:$rpc_port/eth/v1/node/syncing")
+  exitstatus=$?
+  set -e
+  if [ $exitstatus -ne 0 ]; then
+    echo "Unable to connect to Lighthouse: Is it running?"
+    echo "Output: ${sync_status}"
+    echo "Aborting."
+    exit 1
+  fi
+
+  if [[ "${sync_status}" =~ "true" ]]; then # Avoid jq - if el_offline or is_optimistic or is_syncing, don't proceed
+    echo "Lighthouse is not done syncing yet. Sync status:"
+    echo "${sync_status}"
+    echo
+    echo "Aborting."
+    exit 1
+  fi
+
+  if [ $__non_interactive = 0 ]; then
+    while true; do
+      read -rp "WARNING - this will stop Lighthouse and prune its state. Do you wish to continue? (No/Yes) " yn
+      case $yn in
+        [Yy][Ee][Ss] ) break;;
+        * ) echo "Aborting, no changes made"; exit 130;;
+      esac
+    done
+  fi
+
+  echo
+  echo "Starting Lighthouse prune"
+  echo
+  docompose run --rm set-cl-prune-marker "touch /var/lib/lighthouse/beacon/prune-marker"
+  docompose stop consensus && docompose rm -f consensus
+  start
+  echo
+  echo "Prune is running, you can observe it with '$__me logs -f consensus'"
+  echo
+  echo "When prune is done, Lighthouse will automatically start again."
   echo
 }
 
@@ -2026,7 +2235,8 @@ __keys_usage() {
   echo "      in slashing_protection*.json files that match the public key(s) of the imported validator(s)"
   echo "  delete 0xPUBKEY | all"
   echo "      Deletes the validator with public key 0xPUBKEY from the validator client, and exports its"
-  echo "      slashing protection database. \"all\" deletes all detected validators instead"
+  echo "      slashing protection database."
+  echo "      \"all\" deletes all detected validators."
   echo "  register"
   echo "      For use with web3signer only: Re-register all keys in web3signer with the validator client"
   echo
@@ -2068,12 +2278,15 @@ __keys_usage() {
   echo "  send-address-change"
   echo "      Send a change-operations.json with ethdo, setting the withdrawal address"
   echo
-  echo "  sign-exit 0xPUBKEY"
+  echo "  sign-exit 0xPUBKEY | all"
   echo "      Create pre-signed exit message for the validator with public key 0xPUBKEY"
+  echo "      \"all\" signs an exit message for all detected validators"
   echo "  sign-exit from-keystore [--offline]"
   echo "      Create pre-signed exit messages with ethdo, from keystore files in ./.eth/validator_keys"
   echo "  send-exit"
   echo "      Send pre-signed exit messages in ./.eth/exit_messages to the Ethereum chain"
+  echo
+  echo " Commands can be appended with \"--debug\" to see debug output"
 }
 
 
@@ -2239,6 +2452,7 @@ keys() {
       exitstatus=$?
       if [ "${exitstatus}" -eq 0 ]; then
         echo "${__json}" >".eth/exit_messages/${__pubkey::10}--${__pubkey:90}-exit.json"
+# shellcheck disable=SC2320
         exitstatus=$?
         if [ "${exitstatus}" -eq 0 ]; then
           echo "Creating an exit message for validator ${__pubkey} into file \
@@ -2438,9 +2652,10 @@ screen.\n\nCustom testnets only work with a URL to fetch their configuration fro
 query_deployment() {
   if [ "${NETWORK}" = "gnosis" ]; then
     __deployment=$(whiptail --notags --title "Select deployment type" --menu \
-    "What kind of deployment do you want to run?" 9 65 2 \
+    "What kind of deployment do you want to run?" 10 65 3 \
     "node" "Ethereum node - consensus, execution and validator client" \
-    "rpc" "Ethereum RPC node - consensus and execution client" 3>&1 1>&2 2>&3)
+    "rpc" "Ethereum RPC node - consensus and execution client" \
+    "validator" "Validator client only" 3>&1 1>&2 2>&3)
   elif uname -a | grep -q aarch64; then
     __deployment=$(whiptail --notags --title "Select deployment type" --menu \
     "What kind of deployment do you want to run?" 10 65 3 \
@@ -2716,8 +2931,16 @@ query_graffiti() {
   var="GRAFFITI"
   GRAFFITI=$(sed -n -e "s/^${var}=\(.*\)/\1/p" "${ENV_FILE}" || true)
 
-  GRAFFITI=$(whiptail --title "Configure Graffiti" --inputbox "What Graffiti do you want to send with your blocks? \
+  while true; do
+    GRAFFITI=$(whiptail --title "Configure Graffiti" --inputbox "What Graffiti do you want to send with your blocks? \
 (up to 32 characters)" 10 65 "${GRAFFITI}" 3>&1 1>&2 2>&3)
+
+    if [[ $(echo -n "${GRAFFITI}" | wc -c) -gt 32 ]]; then
+      whiptail --msgbox "The graffiti string cannot be longer than 32 characters. Emojis count as 4, each." 16 65
+    else
+      break
+    fi
+  done
 
   echo "your Graffiti is:" "${GRAFFITI}"
 }
@@ -2801,7 +3024,8 @@ https://0x8a72a5ec3e2909fff931c8b42c9e0e6c6e660ac48a98016777fc63a73316b3ffb5c622
       "holesky")
         MEV_RELAYS="https://0xafa4c6985aa049fb79dd37010438cfebeb0f2bd42b115b89dd678dab0670c1de38da0c4e9138c9290a398ecd9a0b3110@boost-relay-holesky.flashbots.net,\
 https://0xaa58208899c6105603b74396734a6263cc7d947f444f396a90f7b7d3e65d102aec7e5e5291b27e08d02c50a050825c2f@holesky.titanrelay.xyz,\
-https://0xb1d229d9c21298a87846c7022ebeef277dfc321fe674fa45312e20b5b6c400bfde9383f801848d7837ed5fc449083a12@relay-holesky.edennetwork.io"
+https://0xb1d229d9c21298a87846c7022ebeef277dfc321fe674fa45312e20b5b6c400bfde9383f801848d7837ed5fc449083a12@relay-holesky.edennetwork.io,\
+https://0x821f2a65afb70e7f2e820a925a9b4c80a159620582c1766b1b09729fec178b11ea22abb3a51f07b288be815a1a2ff516@bloxroute.holesky.blxrbdn.com"
         ;;
       "mainnet")
         MEV_RELAYS="https://0xac6e77dfe25ecd6110b8e780608cce0dab71fdd5ebea22a16c0205200f2f8e2e3ad3b71d3499c54ad14d6c21b41a37ae@boost-relay.flashbots.net,\
@@ -2850,7 +3074,8 @@ https://0x95a0a6af2566fa7db732020bb2724be61963ac1eb760aa1046365eb443bd4e3cc0fba0
         "holesky")
           MEV_RELAYS="https://0xafa4c6985aa049fb79dd37010438cfebeb0f2bd42b115b89dd678dab0670c1de38da0c4e9138c9290a398ecd9a0b3110@boost-relay-holesky.flashbots.net,\
 https://0xaa58208899c6105603b74396734a6263cc7d947f444f396a90f7b7d3e65d102aec7e5e5291b27e08d02c50a050825c2f@holesky.titanrelay.xyz,\
-https://0xb1d229d9c21298a87846c7022ebeef277dfc321fe674fa45312e20b5b6c400bfde9383f801848d7837ed5fc449083a12@relay-holesky.edennetwork.io"
+https://0xb1d229d9c21298a87846c7022ebeef277dfc321fe674fa45312e20b5b6c400bfde9383f801848d7837ed5fc449083a12@relay-holesky.edennetwork.io,
+https://0x821f2a65afb70e7f2e820a925a9b4c80a159620582c1766b1b09729fec178b11ea22abb3a51f07b288be815a1a2ff516@bloxroute.holesky.blxrbdn.com"
           ;;
         "mainnet")
           MEV_RELAYS=https://0xac6e77dfe25ecd6110b8e780608cce0dab71fdd5ebea22a16c0205200f2f8e2e3ad3b71d3499c54ad14d6c21b41a37ae@boost-relay.flashbots.net,\
@@ -2931,7 +3156,7 @@ handle_error() {
       echo "Web3signer slashing protection database migration failed, after switching to the migrated data."
       echo
       echo "The slashing protection database itself is likely fine, but somewhere in the switch to PostgreSQL 16"
-      echo "an error occured, which is likely to keep your node from functioning correctly."
+      echo "an error occurred, which is likely to keep your node from functioning correctly."
     else
       echo "Web3signer slashing protection database migration failed, but before removing the original data."
       echo
@@ -3217,16 +3442,27 @@ version() {
       docompose exec traefik traefik version
       echo
       ;;&
-    *traefik-cf.yml* )
-      echo "CloudFlare DDNS"
-      docompose exec cf-ddns grep version /app/package.json
-      echo
-      ;;&
   esac
 }
 
 
-help() {
+__update_help() {
+  echo "usage: $__me update [--refresh-targets] [--non-interactive]"
+  echo
+  echo "Updates Eth Docker itself, as required the contents of \".env\", and the clients."
+  echo
+  echo "A combination of \"git pull\" for Eth Docker, some bash scripting to bring new variables from \"default.env\","
+  echo "and \"docker compose pull\" as well as \"docker compose build\" for the clients."
+  echo
+  echo "If warranted, will also offer resync when clients require it, or upgrade of PostgreSQL version."
+  echo
+  echo "\"--refresh-targets\" sets Docker tags, source targets, and repos of clients back to the defaults in \"default.env\"."
+  echo "\"--non-interactive\" does not ask questions and assumes Yes for database resyncs and migrations."
+  echo
+}
+
+
+__full_help() {
   echo "usage: $__me [-h|--help] <command>"
   echo
   echo "commands:"
@@ -3262,6 +3498,8 @@ help() {
   echo "    restarts the Nethermind execution client and prunes its DB."
   echo "  prune-besu [--non-interactive]"
   echo "    stops the Besu execution client and prunes trie-logs."
+  echo "  prune-lighthouse [--non-interactive]"
+  echo "    stops the Lighthouse consensus client and prunes state."
   echo "  resync-execution"
   echo "    removes the execution layer database and forces a resync."
   echo "  resync-consensus"
@@ -3287,6 +3525,13 @@ help() {
 }
 
 
+help() {
+  case $* in
+    *update*) __update_help;;
+    *) __full_help;;
+  esac
+}
+
 # Main body from here
 ENV_FILE=.env
 __during_config=0
@@ -3302,8 +3547,8 @@ fi
 
 trap 'handle_error $? $LINENO' ERR
 
-if [[ "$#" -eq 0 || "$1" == "-h" || "$1" == "--help" ]]; then
-  help
+if [[ "$#" -eq 0 || "$*" =~ "-h" ]]; then # Lazy match for -h and --help but also --histogram, so careful here
+  help "$@"
   exit 0
 fi
 
@@ -3356,7 +3601,7 @@ fi
 
 case "$__command" in
   help|config|keys|update|up|start|down|stop|restart|version|logs|cmd|terminate|prune-geth|prune-nethermind\
-      |prune-besu|resync-execution|resync-consensus|attach-geth|keyimport|space)
+      |prune-besu|prune-lighthouse|resync-execution|resync-consensus|attach-geth|keyimport|space)
     $__command "$@";;
   *)
     echo "Unrecognized command $__command"

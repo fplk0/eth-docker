@@ -20,6 +20,20 @@ call_api() {
         fi
     fi
     __return=$?
+    if [ "${__debug}" -eq 1 ]; then
+      echo "Called ${__api_container}:${__api_port}/${__api_path} with method ${__http_method} and the following data"
+      if [ -n "${__api_data}" ]; then
+        echo "${__api_data}"
+      else
+        echo "This was a call without data"
+      fi
+      echo "The return code was ${__code} and if we had result data, here it is."
+      if [ -f /tmp/result.txt ]; then
+        cat /tmp/result.txt
+        echo
+      fi
+    fi
+
     if [ $__return -ne 0 ]; then
         echo "Error encountered while trying to call the keymanager API via curl."
         echo "Please make sure the ${__service} service is up and its logs show the key manager API, port ${__api_port}, enabled."
@@ -81,6 +95,44 @@ print-api-token() {
     echo "${__token}"
 }
 
+__check_pubkey() {
+  if [ -z "$1" ]; then
+    echo "Please specify a validator public key"
+    exit 0
+  fi
+  if [[ $1 != 0x* ]]; then
+    echo "The validator public key has to start with \"0x\""
+    exit 0
+  fi
+  if [[ ${#1} -ne 98 ]]; then
+    echo "Wrong length for the validator public key - was it truncated?"
+    exit 0
+  fi
+  if [[ ! $1 =~ ^0x[0-9a-fA-F]+$ ]]; then
+    echo "The validator public key needs to be a hexadecimal value starting with 0x"
+    exit 0
+  fi
+}
+
+__check_address() {
+  if [ -z "$1" ]; then
+    echo "Please specify an Ethereum address"
+    exit 0
+  fi
+  if [[ $1 != 0x* ]]; then
+    echo "The Ethereum address has to start with \"0x\""
+    exit 0
+  fi
+  if [[ ${#1} -ne 42 ]]; then
+    echo "Wrong length for the Ethereum address - was it truncated?"
+    exit 0
+  fi
+  if [[ ! $1 =~ ^0x[0-9a-fA-F]+$ ]]; then
+    echo "The Ethereum address needs to be a hexadecimal value starting with 0x"
+    exit 0
+  fi
+}
+
 get-prysm-wallet() {
     if [ -f /var/lib/prysm/password.txt ]; then
         echo "The password for the Prysm wallet is:"
@@ -91,10 +143,7 @@ get-prysm-wallet() {
 }
 
 recipient-get() {
-    if [ -z "$__pubkey" ]; then
-      echo "Please specify a validator public key"
-      exit 0
-    fi
+    __check_pubkey "${__pubkey}"
     get-token
     __api_path=eth/v1/validator/$__pubkey/feerecipient
     __api_data=""
@@ -111,14 +160,8 @@ recipient-get() {
 }
 
 recipient-set() {
-    if [ -z "$__pubkey" ]; then
-      echo "Please specify a validator public key"
-      exit 0
-    fi
-    if [ -z "$__address" ]; then
-      echo "Please specify a fee recipient address"
-      exit 0
-    fi
+    __check_pubkey "${__pubkey}"
+    __check_address "${__address}"
     get-token
     __api_path=eth/v1/validator/$__pubkey/feerecipient
     __api_data="{\"ethaddress\": \"$__address\" }"
@@ -136,10 +179,7 @@ recipient-set() {
 }
 
 recipient-delete() {
-    if [ -z "$__pubkey" ]; then
-      echo "Please specify a validator public key"
-      exit 0
-    fi
+    __check_pubkey "${__pubkey}"
     get-token
     __api_path=eth/v1/validator/$__pubkey/feerecipient
     __api_data=""
@@ -156,10 +196,7 @@ recipient-delete() {
 }
 
 gas-get() {
-    if [ -z "$__pubkey" ]; then
-      echo "Please specify a validator public key"
-      exit 0
-    fi
+    __check_pubkey "${__pubkey}"
     get-token
     __api_path=eth/v1/validator/$__pubkey/gas_limit
     __api_data=""
@@ -177,12 +214,13 @@ gas-get() {
 }
 
 gas-set() {
-    if [ -z "$__pubkey" ]; then
-      echo "Please specify a validator public key"
-      exit 0
-    fi
+    __check_pubkey "${__pubkey}"
     if [ -z "$__limit" ]; then
       echo "Please specify a gas limit"
+      exit 0
+    fi
+    if [[ ! $__limit =~ ^[0-9]+$ ]]; then
+      echo "The gas limit needs to be a decimal number"
       exit 0
     fi
     get-token
@@ -202,10 +240,7 @@ gas-set() {
 }
 
 gas-delete() {
-    if [ -z "$__pubkey" ]; then
-      echo "Please specify a validator public key"
-      exit 0
-    fi
+    __check_pubkey "${__pubkey}"
     get-token
     __api_path=eth/v1/validator/$__pubkey/gas_limit
     __api_data=""
@@ -223,10 +258,7 @@ gas-delete() {
 }
 
 graffiti-get() {
-    if [ -z "$__pubkey" ]; then
-      echo "Please specify a validator public key"
-      exit 0
-    fi
+    __check_pubkey "${__pubkey}"
     get-token
     __api_path=eth/v1/validator/$__pubkey/graffiti
     __api_data=""
@@ -244,12 +276,13 @@ graffiti-get() {
 }
 
 graffiti-set() {
-    if [ -z "$__pubkey" ]; then
-      echo "Please specify a validator public key"
-      exit 0
-    fi
+    __check_pubkey "${__pubkey}"
     if [ -z "$__graffiti" ]; then
       echo "Please specify a graffiti string"
+      exit 0
+    fi
+    if [[ $(echo -n "${__graffiti}" | wc -c) -gt 32 ]]; then
+      echo "The graffiti string cannot be longer than 32 characters. Emojis count as 4, each."
       exit 0
     fi
     get-token
@@ -269,10 +302,7 @@ graffiti-set() {
 }
 
 graffiti-delete() {
-    if [ -z "$__pubkey" ]; then
-      echo "Please specify a validator public key"
-      exit 0
-    fi
+    __check_pubkey "${__pubkey}"
     get-token
     __api_path=eth/v1/validator/$__pubkey/graffiti
     __api_data=""
@@ -290,16 +320,37 @@ graffiti-delete() {
 }
 
 exit-sign() {
-    if [ -z "$__pubkey" ]; then
-      echo "Please specify a validator public key"
+    if [ -z "${__pubkey}" ]; then
+      echo "Please specify a validator public key to sign an exit message for, or \"all\""
       exit 0
     fi
+    if [ ! "${__pubkey}" = "all" ]; then
+      __check_pubkey "${__pubkey}"
+    fi
+    __pubkeys=()
+    __api_path=eth/v1/keystores
     get-token
-    __api_path=eth/v1/validator/$__pubkey/voluntary_exit
-    __api_data=""
-    __http_method=POST
-    call_api
-    case $__code in
+    if [ "${__pubkey}" = "all" ]; then
+      __validator-list-call
+      if [ "$(echo "$__result" | jq '.data | length')" -eq 0 ]; then
+        echo "No keys loaded, cannot sign anything"
+        return
+      else
+        __keys_to_array=$(echo "$__result" | jq -r '.data[].validating_pubkey' | tr '\n' ' ')
+# Word splitting is desired for the array
+# shellcheck disable=SC2206
+        __pubkeys+=( ${__keys_to_array} )
+      fi
+    else
+      __pubkeys+=( "${__pubkey}" )
+    fi
+
+    for __pubkey in "${__pubkeys[@]}"; do
+      __api_data=""
+      __http_method=POST
+      __api_path=eth/v1/validator/$__pubkey/voluntary_exit
+      call_api
+      case $__code in
         200) echo "Signed voluntary exit for validator with public key $__pubkey";;
         400) echo "The pubkey or limit was formatted wrong. Error: $(echo "$__result" | jq -r '.message')"; exit 1;;
         401) echo "No authorization token found. This is a bug. Error: $(echo "$__result" | jq -r '.message')"; exit 70;;
@@ -307,18 +358,22 @@ exit-sign() {
         404) echo "Path not found error. Was that the right pubkey? Error: $(echo "$__result" | jq -r '.message')"; exit 0;;
         500) echo "Internal server error. Error: $(echo "$__result" | jq -r '.message')"; exit 1;;
         *) echo "Unexpected return code $__code. Result: $__result"; exit 1;;
-    esac
-    # This is only reached for 200
-    __result=$(echo "${__result}" | jq -c '.data')
+      esac
+      # This is only reached for 200
+      __result=$(echo "${__result}" | jq -c '.data')
 
-    echo "${__result}" >"/exit_messages/${__pubkey::10}--${__pubkey:90}-exit.json"
-    exitstatus=$?
-    if [ "${exitstatus}" -eq 0 ]; then
+      echo "${__result}" >"/exit_messages/${__pubkey::10}--${__pubkey:90}-exit.json"
+# shellcheck disable=SC2320
+      exitstatus=$?
+      if [ "${exitstatus}" -eq 0 ]; then
         echo "Writing the exit message into file ./.eth/exit_messages/${__pubkey::10}--${__pubkey:90}-exit.json succeeded"
-    else
+      else
         echo "Error writing exit json to file ./.eth/exit_messages/${__pubkey::10}--${__pubkey:90}-exit.json"
-    fi
+      fi
+      echo
+    done
 }
+
 
 exit-send() {
     shopt -s nullglob
@@ -409,6 +464,9 @@ validator-delete() {
     if [ -z "${__pubkey}" ]; then
       echo "Please specify a validator public key to delete, or \"all\""
       exit 0
+    fi
+    if [ ! "${__pubkey}" = "all" ]; then
+      __check_pubkey "${__pubkey}"
     fi
     __pubkeys=()
     __api_path=eth/v1/keystores
@@ -633,7 +691,7 @@ and secrets directories into .eth/validator_keys instead."
         else
             __justone=1
         fi
-        if [ "$__eth2_val_tools" -eq 0 ] && [ $__justone -eq 1 ]; then
+        if [ "$__eth2_val_tools" -eq 0 ] && [ "$__justone" -eq 1 ]; then
             while true; do
                 read -srp "Please enter the password for your validator key(s): " __password
                 echo
@@ -679,7 +737,7 @@ and secrets directories into .eth/validator_keys instead."
                 continue
             fi
         fi
-        if [ $__eth2_val_tools -eq 0 ] && [ $__justone -eq 0 ]; then
+        if [ "$__eth2_val_tools" -eq 0 ] && [ "$__justone" -eq 0 ]; then
             while true; do
                 read -srp "Please enter the password for your validator key stored in $__keyfile with public key $__pubkey: " __password
                 echo
@@ -972,7 +1030,8 @@ usage() {
     echo "      in slashing_protection*.json files that match the public key(s) of the imported validator(s)"
     echo "  delete 0xPUBKEY | all"
     echo "      Deletes the validator with public key 0xPUBKEY from the validator client, and exports its"
-    echo "      slashing protection database. \"all\" deletes all detected validators instead"
+    echo "      slashing protection database."
+    echo "      \"all\" deletes all detected validators."
     echo "  register"
     echo "      For use with web3signer only: Re-register all keys in web3signer with the validator client"
     echo
@@ -995,7 +1054,7 @@ usage() {
     echo "  get-graffiti 0xPUBKEY"
     echo "      List graffiti set for the validator with public key 0xPUBKEY"
     echo "      Validators will use GRAFFITI in .env by default, if not set individually"
-    echo "  set-graffiti 0xPUBKEY amount"
+    echo "  set-graffiti 0xPUBKEY string"
     echo "      Set individual graffiti for the validator with public key 0xPUBKEY"
     echo "  delete-graffiti 0xPUBKEY"
     echo "      Delete individual graffiti for the validator with public key 0xPUBKEY"
@@ -1014,12 +1073,15 @@ usage() {
     echo "  send-address-change"
     echo "      Send a change-operations.json with ethdo, setting the withdrawal address"
     echo
-    echo "  sign-exit 0xPUBKEY"
+    echo "  sign-exit 0xPUBKEY | all"
     echo "      Create pre-signed exit message for the validator with public key 0xPUBKEY"
+    echo "      \"all\" signs an exit message for all detected validators"
     echo "  sign-exit from-keystore [--offline]"
     echo "      Create pre-signed exit messages with ethdo, from keystore files in ./.eth/validator_keys"
     echo "  send-exit"
     echo "      Send pre-signed exit messages in ./.eth/exit_messages to the Ethereum chain"
+    echo
+    echo " Commands can be appended with \"--debug\" to see debug output"
 }
 
 set -e
@@ -1078,6 +1140,12 @@ case "$__api_container" in
     vc) __service=validator;;
     *) __service="$__api_container";;
 esac
+
+if echo "$@" | grep -q '.*--debug.*' 2>/dev/null ; then
+  __debug=1
+else
+  __debug=0
+fi
 
 case "$3" in
     list)

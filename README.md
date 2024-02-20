@@ -16,7 +16,7 @@ For a quick testnet start, you can install prerequisites and configure Eth Docke
 
 ## Support
 
-The #software channel in [ethstaker Discord](https://discord.io/ethstaker) is the place to ask questions about Eth Docker.
+The #software channel in [ethstaker Discord](https://discord.gg/ethstaker) is the place to ask questions about Eth Docker.
 
 ## Contributions
 
@@ -34,4 +34,4 @@ Eth Docker uses a "semver-ish" scheme.
 large.
 - Second through fourth digit, [semver](https://semver.org/).
 
-This is Eth Docker v2.5.0.1
+This is Eth Docker v2.6.1.0
