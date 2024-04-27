@@ -102,7 +102,7 @@ services:
 
   cadvisor:
     restart: "unless-stopped"
-    image: gcr.io/cadvisor/cadvisor:v0.47.1
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - /:/rootfs:ro
@@ -142,7 +142,7 @@ services:
       - metrics.instance=promtail
 
   loki:
-    image: grafana/loki:latest
+    image: grafana/loki:2.9.6
     volumes:
       - loki-data:/tmp
       - ./loki:/etc/loki
